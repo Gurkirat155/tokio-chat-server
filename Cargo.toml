@@ -1,0 +1,8 @@
+[package]
+name = "tokio-cs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] } # Most apps need the main tokio runtime
+tokio-util = "0.7"

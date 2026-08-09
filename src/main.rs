@@ -70,10 +70,13 @@ async fn ask_username(stream: Arc<Mutex<TcpStream>>, streams_transmitters: Arc<M
 async fn handle_client(mut buf_read_stream: BufReader<OwnedReadHalf>, write_stream: OwnedWriteHalf, username: String, client_tx: Sender<String>, mut client_rx: Receiver<String>) {
     println!("Inside the handle_client");
     let mut message= String::new();
-    
+
     loop {
         match buf_read_stream.read_line(&mut message).await {
-            Ok(0) => {println!("User Disconnected.")},
+            Ok(0)=>{
+                        println!("User Disconnected.");
+                        break;
+                    },
             Ok(_) => {println!("This is the message {:?}", message.trim())},
             Err(e) => {println!("Failed to readline")}
         }

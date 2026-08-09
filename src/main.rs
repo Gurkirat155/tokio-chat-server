@@ -104,51 +104,86 @@ async fn ask_username(stream: Arc<Mutex<TcpStream>>, streams_transmitters: Arc<M
     7. Add a feature in which when user discinnects the tx should be removed from the global state in the Ok(0) whe user disconnects 
     8. Now this function should listen to the receiver end of the mpsc channel (DONE)
     9. The mpsc channel message should be also be decode what does it say,so parse that message too 
+    10. // Self -- List, Error, Help  Server - Msg, Broad, Quit 
 */
-async fn handle_client(mut buf_read_stream: BufReader<OwnedReadHalf>, write_stream: OwnedWriteHalf, username: String, client_tx: Sender<String>, mut client_rx: Receiver<String>, server_tx: Sender<Command>) {
+async fn handle_client(mut buf_read_stream: BufReader<OwnedReadHalf>, mut write_stream: OwnedWriteHalf, username: String, client_tx: Sender<String>, mut client_rx: Receiver<String>, server_tx: Sender<Command>) {
     println!("Inside the handle_client");
  
 
     // What messages could be received from this channel
     // 1. From server that this person sent this message so two "from" and "message"
     // let channel_message = client_rx.recv().await;
-
+    // 2. now i have to write the write stream part of the stream in this which should be 
+    // First use tokio select and then write 
     let mut reader_message = String::new();
     loop {
-        match buf_read_stream.read_line(&mut reader_message).await {
-            Ok(0)=>{
-                println!("User Disconnected.");
-                break;
-            },
-            Ok(_) => {
-                println!("This is the reader_message {:?}", reader_message.trim());
-                let command = parse_message(username.clone(), &reader_message);
-
-                match command.Event {
-                   ClientEvent::Msg => {
-                    server_tx.send(command).await;
-                   }, 
-                   ClientEvent::Broadcast => {
-                    server_tx.send(command).await;
-                   },
-                   ClientEvent::Quit => {
-                    server_tx.send(command).await;
-                   }
-                   _ => {}
+        tokio::select! {
+            // val = channel_message = client_rx.recv().await
+            read_result =  buf_read_stream.read_line(&mut reader_message) => {
+                match read_result {
+                    Ok(0)=>{
+                        println!("User Disconnected.");
+                        break;
+                    },
+                    Ok(_) => {
+                        println!("This is the reader_message {:?}", reader_message.trim());
+                        let command = parse_message(username.clone(), &reader_message);
+                        
+                        match command.Event {
+                           ClientEvent::Msg => {
+                            server_tx.send(command).await;
+                           }, 
+                           ClientEvent::Broadcast => {
+                            server_tx.send(command).await;
+                           },
+                           ClientEvent::Quit => {
+                            server_tx.send(command).await;
+                            println!("User disconnected successfully");
+                            break;
+                           },
+                           ClientEvent::List => {
+                            let message = command.Payload.Message;
+                            let formatted_message = &format!("\n Server: {message:?} \n");
+                            write_stream.write_all(formatted_message.as_bytes()).await;
+                           },
+                           ClientEvent::Help => {
+                            let message = command.Payload.Message;
+                            let formatted_message = &format!("\n Server: {message:?} \n");
+                            write_stream.write_all(formatted_message.as_bytes()).await;
+                            // write_stream.write_all()
+                           },
+                           ClientEvent::Error => {
+                            println!("Inside the Erro of the handle_client function");
+                            let message = command.Payload.Message;
+                            let formatted_message = &format!("\n Server: ERROR {message:?} \n");
+                            write_stream.write_all(formatted_message.as_bytes()).await;
+                           },
+                           _ => {}
+                        }
+                        // Msg, Braod, List, Quit, Help ,Error
+                        reader_message.clear();
+                    },
+                    Err(e) => {println!("Failed to readline")}
                 }
-
-                // match server_tx.send(reader_message.clone()).await  {
-                //     Ok(()) => {println!("Message sent")},
-                //     Err(e) => {println!("Message not sent {e:?}")}
-                // }
-                // Msg, Braod, List, Quit, Help ,Error
-                // Self -- List, Error, Help
-                // Server - Msg, Broad, Quit
-                reader_message.clear();
-            },
-            Err(e) => {println!("Failed to readline")}
+            }
+            
+            messages_from_channel = client_rx.recv() =>{
+                println!("This is the message recived from the channel {messages_from_channel:?}");
+                match messages_from_channel {
+                    Some(raw_message) => {
+                        let spilt_message:Vec<&str> = raw_message.splitn(3, "/").collect();
+                        let sender_username = spilt_message[2];
+                        let message = spilt_message[3];
+                        let prefix = if sender_username == "Server" {"Server"} else {sender_username};
+                        let formatted_message = &format!("\n {prefix:?}: {message:?} \n");
+                        write_stream.write_all(formatted_message.as_bytes()).await;
+                    },
+                    _ =>{}
+                }
+                // write_stream.write_all(src)
+            }
         }
-    }
+    } 
 }
 
 /*
@@ -161,7 +196,9 @@ fn parse_message(sender_username: String, message: &String) -> Command {
     if message.starts_with("/") {
         println!("this is the message while parsing");
         let splitting_message: Vec<&str> = message.splitn(4, "/").collect();
-        match  splitting_message[1] {
+        println!("this is the spltting message first index PARSE MESSAGE {:?}", splitting_message[1] );
+        match  splitting_message[1].trim() {
+            
             "msg" => {
                 match (splitting_message.get(2), splitting_message.get(3)) {
                     (Some(receiver_username), Some(receiver_message)) => {
@@ -183,7 +220,13 @@ fn parse_message(sender_username: String, message: &String) -> Command {
             },
             "list" => {
                 println!("Inside list");
-                let formatted_message = &format!("List");
+                let formatted_message = &format!("
+                            /msg - msg that particular user \r\n
+                            /list - list all the users connected to the server \r\n
+                            /broadcast - broadcast message to all the users in the server \r\n
+                            /help - list all the cmds with the description on what do they do \r\n
+                            /quit - quit the message or disconnect the user \r\n");
+            
                 Command { Event: ClientEvent::List, Payload: MessagePayload{Username: sender_username, Message:  formatted_message.to_string()}}
             },
             "broadcast" => {

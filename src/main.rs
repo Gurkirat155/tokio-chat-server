@@ -97,24 +97,18 @@ async fn ask_username(stream: Arc<Mutex<TcpStream>>, streams_transmitters: Arc<M
 /*
     1. Should receive the stream (Params) (DONE)
     2. Split the stream into read and write (DONE)
-    3. Should receive the server transmitter (Params)
+    3. Should receive the server transmitter (Params) (DONE)
     4. Should Receive the username (Params) (DONE)
     5. Should receive the receiver of the client itself (Params) (DONE)
-    6. This function should implement select for seclecting between the future that are ready for the client (Read, or to write to someone , or recieveing a message via channels)
+    6. This function should implement select for seclecting between the future that are ready for the client (Read, or to write to someone , or recieveing a message via channels) (DONE)
     7. Add a feature in which when user discinnects the tx should be removed from the global state in the Ok(0) whe user disconnects 
     8. Now this function should listen to the receiver end of the mpsc channel (DONE)
     9. The mpsc channel message should be also be decode what does it say,so parse that message too 
-    10. // Self -- List, Error, Help  Server - Msg, Broad, Quit 
+    10. // Self -- List, Error, Help  Server - Msg, Broad, Quit  (DONE)
 */
 async fn handle_client(mut buf_read_stream: BufReader<OwnedReadHalf>, mut write_stream: OwnedWriteHalf, username: String, client_tx: Sender<String>, mut client_rx: Receiver<String>, server_tx: Sender<Command>) {
     println!("Inside the handle_client");
  
-
-    // What messages could be received from this channel
-    // 1. From server that this person sent this message so two "from" and "message"
-    // let channel_message = client_rx.recv().await;
-    // 2. now i have to write the write stream part of the stream in this which should be 
-    // First use tokio select and then write 
     let mut reader_message = String::new();
     loop {
         tokio::select! {
@@ -137,7 +131,10 @@ async fn handle_client(mut buf_read_stream: BufReader<OwnedReadHalf>, mut write_
                             server_tx.send(command).await;
                            },
                            ClientEvent::Quit => {
-                            server_tx.send(command).await;
+                            match server_tx.send(command).await {
+                                Ok(_) => {println!("Message Payload to Server")},
+                                Err(e) => {println!("Message Not sent to the Server {e:?}")}
+                            }
                             println!("User disconnected successfully");
                             break;
                            },

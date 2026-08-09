@@ -1,5 +1,26 @@
 use tokio::{io::{AsyncBufReadExt, AsyncWriteExt, BufReader, ReadHalf}, net::{TcpListener, TcpStream, tcp::{OwnedReadHalf, OwnedWriteHalf, WriteHalf}}, stream, sync::{ Mutex, mpsc::{self, Receiver, Sender}}};
-use std::{collections::HashMap, error::Error, rc::Rc, sync::{Arc}};
+use std::{collections::HashMap, error::Error, rc::Rc, sync::Arc, vec};
+
+
+enum ClientEvent{
+    Msg,
+    List,
+    Broadcast,
+    Quit,
+    Help,
+    Error,
+}
+
+struct MessagePayload {
+    Username: String,
+    Message: String
+}
+struct Command {
+    Event: ClientEvent,
+    Payload: MessagePayload
+}
+
+
 
 
 #[tokio::main]
@@ -7,7 +28,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Username and transmitter of the the clients tasks 
     let streams_channels_tx : Arc<Mutex<HashMap<String, Sender<String>>> >= Arc::new(Mutex::new(HashMap::new()));
     
-    let (server_tx, mut server_rx) = mpsc::channel::<String>(100);
+    let (server_tx, mut server_rx) = mpsc::channel::<Command>(100);
     // let raw_streams: Arc<Mutex<TcpStream>>;
     tokio::spawn(async move {
         // handle_server() 
@@ -16,7 +37,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         // also will check if the user exists or not if not that will notify the sender user not found
         println!("Receiver channel open for the server");
         while let Some(message) = server_rx.recv().await {
-            println!("Recieved a message to the server viz {:?}: ", message);
+            // println!("Recieved a message to the server viz {:?}: ", message);
+            println!("Recieved a message to the server");
         }
         println!("Server receiver channel closed");
     });
@@ -43,7 +65,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
    
 }
 
-async fn ask_username(stream: Arc<Mutex<TcpStream>>, streams_transmitters: Arc<Mutex<HashMap<String, Sender<String>>>>, server_tx: Sender<String>) {
+async fn ask_username(stream: Arc<Mutex<TcpStream>>, streams_transmitters: Arc<Mutex<HashMap<String, Sender<String>>>>, server_tx: Sender<Command>) {
     let formatted_message = &format!("Please Enter Your Username: ");
     {   
         let mut locked_shared_stream = stream.lock().await;
@@ -83,7 +105,7 @@ async fn ask_username(stream: Arc<Mutex<TcpStream>>, streams_transmitters: Arc<M
     8. Now this function should listen to the receiver end of the mpsc channel (DONE)
     9. The mpsc channel message should be also be decode what does it say,so parse that message too 
 */
-async fn handle_client(mut buf_read_stream: BufReader<OwnedReadHalf>, write_stream: OwnedWriteHalf, username: String, client_tx: Sender<String>, mut client_rx: Receiver<String>, server_tx: Sender<String>) {
+async fn handle_client(mut buf_read_stream: BufReader<OwnedReadHalf>, write_stream: OwnedWriteHalf, username: String, client_tx: Sender<String>, mut client_rx: Receiver<String>, server_tx: Sender<Command>) {
     println!("Inside the handle_client");
  
 
@@ -100,11 +122,28 @@ async fn handle_client(mut buf_read_stream: BufReader<OwnedReadHalf>, write_stre
             },
             Ok(_) => {
                 println!("This is the reader_message {:?}", reader_message.trim());
-                match server_tx.send(reader_message.clone()).await  {
-                    Ok(()) => {println!("Message sent")},
-                    Err(e) => {println!("Message not sent {e:?}")}
+                let command = parse_message(username.clone(), &reader_message);
+
+                match command.Event {
+                   ClientEvent::Msg => {
+                    server_tx.send(command).await;
+                   }, 
+                   ClientEvent::Broadcast => {
+                    server_tx.send(command).await;
+                   },
+                   ClientEvent::Quit => {
+                    server_tx.send(command).await;
+                   }
+                   _ => {}
                 }
-                // parse_mesage(&reader_message);
+
+                // match server_tx.send(reader_message.clone()).await  {
+                //     Ok(()) => {println!("Message sent")},
+                //     Err(e) => {println!("Message not sent {e:?}")}
+                // }
+                // Msg, Braod, List, Quit, Help ,Error
+                // Self -- List, Error, Help
+                // Server - Msg, Broad, Quit
                 reader_message.clear();
             },
             Err(e) => {println!("Failed to readline")}
@@ -112,8 +151,67 @@ async fn handle_client(mut buf_read_stream: BufReader<OwnedReadHalf>, write_stre
     }
 }
 
-fn parse_mesage(message: &String) {
-
+/*
+    1. Decode the the cmd -> username -> message
+    2. If anything not found it should return an error or for now atleast print  the error 
+    3. cmd == msg, list , broadcast, quit, help 
+*/
+fn parse_message(sender_username: String, message: &String) -> Command {
+    
+    if message.starts_with("/") {
+        println!("this is the message while parsing");
+        let splitting_message: Vec<&str> = message.splitn(4, "/").collect();
+        match  splitting_message[1] {
+            "msg" => {
+                match (splitting_message.get(2), splitting_message.get(3)) {
+                    (Some(receiver_username), Some(receiver_message)) => {
+                        println!("This is the receiver username {:?}", receiver_username);
+                        println!("This is message to the receiver {:?}", receiver_message);
+                        Command { Event: ClientEvent::Msg, Payload: MessagePayload{Username: receiver_username.to_string(), Message:  receiver_message.to_string()}}
+                    },
+                    (None, _) => {
+                        println!("Username empty, please enter a Username");
+                        let formatted_message = &format!("Username empty, please enter a Username");
+                        Command { Event: ClientEvent::Error, Payload: MessagePayload{Username: sender_username, Message:  formatted_message.to_string()}}
+                    },
+                    (_, None) => {
+                        println!("Message empty, please enter a message");
+                        let formatted_message = &format!("Message empty, please enter a message");
+                        Command { Event: ClientEvent::Error, Payload: MessagePayload{Username: sender_username, Message:  formatted_message.to_string()}}
+                    }
+                }
+            },
+            "list" => {
+                println!("Inside list");
+                let formatted_message = &format!("List");
+                Command { Event: ClientEvent::List, Payload: MessagePayload{Username: sender_username, Message:  formatted_message.to_string()}}
+            },
+            "broadcast" => {
+                println!("Inside broadcast");
+                let formatted_message = &format!("Broadcast");
+                Command { Event: ClientEvent::Broadcast, Payload: MessagePayload{Username: sender_username, Message:  formatted_message.to_string()}}
+            },
+            "quit" => {
+                println!("Inside quit");
+                let formatted_message = &format!("Quit");
+                Command { Event: ClientEvent::Quit, Payload: MessagePayload{Username: sender_username, Message:  formatted_message.to_string()}}
+            },
+            "help" => {
+                println!("Inside help");
+                let formatted_message = &format!("Help");
+                Command { Event: ClientEvent::Help, Payload: MessagePayload{Username: sender_username, Message:  formatted_message.to_string()}}
+            },
+            _ => {
+                let formatted_message = &format!("Cmd Not Found");
+                Command { Event: ClientEvent::Error, Payload: MessagePayload{Username: sender_username, Message:  formatted_message.to_string()}}
+            }
+        }
+    }
+    else {
+        println!("Unknown command. Use /msg/username/message");
+        let formatted_message = &format!("Unknown command. Use /msg/username/message");
+        Command { Event: ClientEvent::Error, Payload: MessagePayload{Username: sender_username, Message:  formatted_message.to_string()}}
+    }
 }
 
 

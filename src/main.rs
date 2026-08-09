@@ -12,7 +12,8 @@ enum ClientEvent{
 }
 
 struct MessagePayload {
-    Username: String,
+    Sender_Username: String,
+    Receiver_Username: String,
     Message: String
 }
 struct Command {
@@ -27,20 +28,12 @@ struct Command {
 async fn main() -> Result<(), Box<dyn Error>> {
     // Username and transmitter of the the clients tasks 
     let streams_channels_tx : Arc<Mutex<HashMap<String, Sender<String>>> >= Arc::new(Mutex::new(HashMap::new()));
-    
+    let streams_channels_tx_clone = Arc::clone(&streams_channels_tx);
     let (server_tx, mut server_rx) = mpsc::channel::<Command>(100);
     // let raw_streams: Arc<Mutex<TcpStream>>;
+    
     tokio::spawn(async move {
-        // handle_server() 
-        // will receive messages from all the other clients 
-        // will send message to other clients via channels( from , message)
-        // also will check if the user exists or not if not that will notify the sender user not found
-        println!("Receiver channel open for the server");
-        while let Some(message) = server_rx.recv().await {
-            // println!("Recieved a message to the server viz {:?}: ", message);
-            println!("Recieved a message to the server");
-        }
-        println!("Server receiver channel closed");
+        handle_server(server_rx, streams_channels_tx_clone).await;
     });
 
     
@@ -65,6 +58,43 @@ async fn main() -> Result<(), Box<dyn Error>> {
    
 }
 
+/*
+    1. will receive messages from all the other clients 
+    2. will send message to other clients via channels( from , message)
+    3. parse the payload message 
+    4. also will check if the user exists or not if not that will notify the sender user not found
+*/
+async fn handle_server(mut server_rx: Receiver<Command>, streams_channels_tx: Arc<Mutex<HashMap<String, Sender<String>>>> ) {
+    println!("Receiver channel open for the server");
+    while let Some(payload) = server_rx.recv().await {
+        // println!("Recieved a message to the server viz {:?}: ", message);
+        match payload.Event {
+            ClientEvent::Msg => {
+                // find the user if not present than send message back to the sender that username entered incorrectly or does not exist
+                println!("RECIEVED PAYLOAD FROM THE CLIENT {:?}", payload.Payload.Message);
+                match streams_channels_tx.lock().await.get(&payload.Payload.Receiver_Username) {
+                    Some(client_tx) => { 
+                        println!("MESSAGE SENT TO THE CLIENT FROM SERVER");
+                        let fromatted_message = format!("{}:{}", payload.Payload.Sender_Username, payload.Payload.Message);
+                        client_tx.send(fromatted_message.to_string()).await;
+                    },
+                    _ =>{
+                        // Send message to sender from server that you entered username does not exist or entered the username incorrect
+                        println!("user not found");
+                    }
+                }
+                // match payload.Payload.Receiver_Username {
+                    
+                //     _ =>{}
+                // }
+            },
+            _ =>{ }
+        }
+        // println!("Recieved a message to the server");
+    }
+    println!("Server receiver channel closed");
+}
+
 async fn ask_username(stream: Arc<Mutex<TcpStream>>, streams_transmitters: Arc<Mutex<HashMap<String, Sender<String>>>>, server_tx: Sender<Command>) {
     let formatted_message = &format!("Please Enter Your Username: ");
     {   
@@ -86,7 +116,8 @@ async fn ask_username(stream: Arc<Mutex<TcpStream>>, streams_transmitters: Arc<M
     }
 
     let (client_tx, client_rx) = mpsc::channel(100);
-    streams_transmitters.lock().await.insert(username.clone(), client_tx.clone());
+    println!("THIS IS THE USERNAME CLONE {:?}", username.clone());
+    streams_transmitters.lock().await.insert((username.trim().to_string()).clone(), client_tx.clone());
 
     tokio::spawn(async move {
         handle_client(reader, write_stream, username, client_tx, client_rx, server_tx).await;
@@ -125,6 +156,7 @@ async fn handle_client(mut buf_read_stream: BufReader<OwnedReadHalf>, mut write_
                         
                         match command.Event {
                            ClientEvent::Msg => {
+                            println!("SENDING MESSAGE TO SERVER VIA CHANNELS IN HANDLE CLIENT");
                             server_tx.send(command).await;
                            }, 
                            ClientEvent::Broadcast => {
@@ -140,19 +172,19 @@ async fn handle_client(mut buf_read_stream: BufReader<OwnedReadHalf>, mut write_
                            },
                            ClientEvent::List => {
                             let message = command.Payload.Message;
-                            let formatted_message = &format!("\n Server: {message:?} \n");
+                            let formatted_message = format!("\n Server: {} \n", message);
                             write_stream.write_all(formatted_message.as_bytes()).await;
                            },
                            ClientEvent::Help => {
                             let message = command.Payload.Message;
-                            let formatted_message = &format!("\n Server: {message:?} \n");
+                            let formatted_message = format!("\n Server: {} \n", message);
                             write_stream.write_all(formatted_message.as_bytes()).await;
                             // write_stream.write_all()
                            },
                            ClientEvent::Error => {
                             println!("Inside the Erro of the handle_client function");
                             let message = command.Payload.Message;
-                            let formatted_message = &format!("\n Server: ERROR {message:?} \n");
+                            let formatted_message = &format!("\n Server: ERROR {} \n", message);
                             write_stream.write_all(formatted_message.as_bytes()).await;
                            },
                            _ => {}
@@ -168,11 +200,16 @@ async fn handle_client(mut buf_read_stream: BufReader<OwnedReadHalf>, mut write_
                 println!("This is the message recived from the channel {messages_from_channel:?}");
                 match messages_from_channel {
                     Some(raw_message) => {
-                        let spilt_message:Vec<&str> = raw_message.splitn(3, "/").collect();
-                        let sender_username = spilt_message[2];
-                        let message = spilt_message[3];
+                        let cleaned_message = raw_message.replace("\\n", "").replace('\n', "").replace('\r', "").replace('"', "");
+                        println!("RAW MESSAGE {raw_message:?}");
+                        println!("CLEANED MESSAGE {cleaned_message:?}");
+                        let spilt_message:Vec<&str> = cleaned_message.split(':').collect();
+                        let sender_username = spilt_message[0].trim();
+                        println!("THIS IS THE USERNAME FROM THE SERVER {sender_username:?}");
+                        let message = spilt_message[1].trim();
+                        println!("THIS IS THE MESSAGE FROM THE SERVER {message:?}");
                         let prefix = if sender_username == "Server" {"Server"} else {sender_username};
-                        let formatted_message = &format!("\n {prefix:?}: {message:?} \n");
+                        let formatted_message = format!("{}: {}\n", prefix , message);
                         write_stream.write_all(formatted_message.as_bytes()).await;
                     },
                     _ =>{}
@@ -183,11 +220,7 @@ async fn handle_client(mut buf_read_stream: BufReader<OwnedReadHalf>, mut write_
     } 
 }
 
-/*
-    1. Decode the the cmd -> username -> message
-    2. If anything not found it should return an error or for now atleast print  the error 
-    3. cmd == msg, list , broadcast, quit, help 
-*/
+
 fn parse_message(sender_username: String, message: &String) -> Command {
     
     if message.starts_with("/") {
@@ -200,57 +233,56 @@ fn parse_message(sender_username: String, message: &String) -> Command {
                 match (splitting_message.get(2), splitting_message.get(3)) {
                     (Some(receiver_username), Some(receiver_message)) => {
                         println!("This is the receiver username {:?}", receiver_username);
-                        println!("This is message to the receiver {:?}", receiver_message);
-                        Command { Event: ClientEvent::Msg, Payload: MessagePayload{Username: receiver_username.to_string(), Message:  receiver_message.to_string()}}
+                        println!("This is message to the receiver {:?}", receiver_message.trim());
+                        Command { Event: ClientEvent::Msg, Payload: MessagePayload{Sender_Username: sender_username, Receiver_Username: receiver_username.to_string(), Message:  (receiver_message.trim()).to_string()}}
                     },
                     (None, _) => {
                         println!("Username empty, please enter a Username");
-                        let formatted_message = &format!("Username empty, please enter a Username");
-                        Command { Event: ClientEvent::Error, Payload: MessagePayload{Username: sender_username, Message:  formatted_message.to_string()}}
+                        let formatted_message = format!("Username empty, please enter a Username");
+                        Command { Event: ClientEvent::Error, Payload: MessagePayload{Sender_Username: sender_username.clone(), Receiver_Username: sender_username.clone(), Message:  formatted_message.to_string()}}
                     },
                     (_, None) => {
                         println!("Message empty, please enter a message");
-                        let formatted_message = &format!("Message empty, please enter a message");
-                        Command { Event: ClientEvent::Error, Payload: MessagePayload{Username: sender_username, Message:  formatted_message.to_string()}}
+                        let formatted_message = format!("Message empty, please enter a message");
+                        Command { Event: ClientEvent::Error, Payload: MessagePayload{Sender_Username: sender_username.clone(), Receiver_Username: sender_username.clone(), Message:  formatted_message.to_string()}}
                     }
                 }
             },
             "list" => {
                 println!("Inside list");
-                let formatted_message = &format!("
+                let formatted_message = format!("list");
+                Command { Event: ClientEvent::List, Payload: MessagePayload{Sender_Username: sender_username.clone(), Receiver_Username: sender_username.clone(), Message:  formatted_message.to_string()}}
+            },
+            "broadcast" => {
+                println!("Inside broadcast");
+                let formatted_message = format!("Broadcast");
+                Command { Event: ClientEvent::Broadcast, Payload: MessagePayload{Sender_Username: sender_username.clone(), Receiver_Username: sender_username.clone(), Message:  formatted_message.to_string()}}
+            },
+            "quit" => {
+                println!("Inside quit");
+                let formatted_message = format!("Quit");
+                Command { Event: ClientEvent::Quit, Payload: MessagePayload{Sender_Username: sender_username.clone(), Receiver_Username: sender_username.clone(), Message:  formatted_message.to_string()}}
+            },
+            "help" => {
+                println!("Inside help");
+                let formatted_message = format!("
                             /msg - msg that particular user \r\n
                             /list - list all the users connected to the server \r\n
                             /broadcast - broadcast message to all the users in the server \r\n
                             /help - list all the cmds with the description on what do they do \r\n
                             /quit - quit the message or disconnect the user \r\n");
-            
-                Command { Event: ClientEvent::List, Payload: MessagePayload{Username: sender_username, Message:  formatted_message.to_string()}}
-            },
-            "broadcast" => {
-                println!("Inside broadcast");
-                let formatted_message = &format!("Broadcast");
-                Command { Event: ClientEvent::Broadcast, Payload: MessagePayload{Username: sender_username, Message:  formatted_message.to_string()}}
-            },
-            "quit" => {
-                println!("Inside quit");
-                let formatted_message = &format!("Quit");
-                Command { Event: ClientEvent::Quit, Payload: MessagePayload{Username: sender_username, Message:  formatted_message.to_string()}}
-            },
-            "help" => {
-                println!("Inside help");
-                let formatted_message = &format!("Help");
-                Command { Event: ClientEvent::Help, Payload: MessagePayload{Username: sender_username, Message:  formatted_message.to_string()}}
+                Command { Event: ClientEvent::Help, Payload: MessagePayload{Sender_Username: sender_username.clone(), Receiver_Username: sender_username.clone(), Message:  formatted_message.to_string()}}
             },
             _ => {
-                let formatted_message = &format!("Cmd Not Found");
-                Command { Event: ClientEvent::Error, Payload: MessagePayload{Username: sender_username, Message:  formatted_message.to_string()}}
+                let formatted_message = format!("Cmd Not Found");
+                Command { Event: ClientEvent::Error, Payload: MessagePayload{Sender_Username: sender_username.clone(), Receiver_Username: sender_username.clone(), Message:  formatted_message.to_string()}}
             }
         }
     }
     else {
         println!("Unknown command. Use /msg/username/message");
-        let formatted_message = &format!("Unknown command. Use /msg/username/message");
-        Command { Event: ClientEvent::Error, Payload: MessagePayload{Username: sender_username, Message:  formatted_message.to_string()}}
+        let formatted_message = format!("Unknown command. Use /msg/username/message");
+        Command { Event: ClientEvent::Error, Payload: MessagePayload{Sender_Username: sender_username.clone(), Receiver_Username: sender_username.clone(), Message:  formatted_message.to_string()}}
     }
 }
 

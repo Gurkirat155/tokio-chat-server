@@ -7,13 +7,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Username and transmitter of the the clients tasks 
     let streams_channels_tx : Arc<Mutex<HashMap<String, Sender<String>>> >= Arc::new(Mutex::new(HashMap::new()));
     
-    // let (server_tx, mut server_rx) = mpsc::channel(100);
+    let (server_tx, mut server_rx) = mpsc::channel::<String>(100);
     // let raw_streams: Arc<Mutex<TcpStream>>;
+    tokio::spawn(async move {
+        // handle_server() 
+        // will receive messages from all the other clients 
+        // will send message to other clients via channels( from , message)
+        // also will check if the user exists or not if not that will notify the sender user not found
+        println!("Receiver channel open for the server");
+        while let Some(message) = server_rx.recv().await {
+            println!("Recieved a message to the server viz {:?}: ", message);
+        }
+        println!("Server receiver channel closed");
+    });
+
     
     let listener = TcpListener::bind("127.0.0.1:8080").await?;
     loop {
         let (stream, _)  = listener.accept().await?;
-
+        
         let shared_stream = Arc::new(Mutex::new(stream));
         let shared_stream_clone_1 = Arc::clone(&shared_stream);
 
@@ -21,16 +33,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
         
         // 1. tokio server task
         // 2. task for asking namees from the streams and giving then than spawns a new tokio task after 
-
+        
         // REASON - the reason i am spawning a thread for asking the username is i don't want to block the main thread so it keeps accepting clients and adding new transmitters in the global state.
+        let server_tx_clone = server_tx.clone();
         tokio::spawn(async move {
-            ask_username(shared_stream_clone_1, streams_channels_tx_clone_1).await;
+            ask_username(shared_stream_clone_1, streams_channels_tx_clone_1, server_tx_clone).await;
         });
     }
    
 }
 
-async fn ask_username(stream: Arc<Mutex<TcpStream>>, streams_transmitters: Arc<Mutex<HashMap<String, Sender<String>>>>) {
+async fn ask_username(stream: Arc<Mutex<TcpStream>>, streams_transmitters: Arc<Mutex<HashMap<String, Sender<String>>>>, server_tx: Sender<String>) {
     let formatted_message = &format!("Please Enter Your Username: ");
     {   
         let mut locked_shared_stream = stream.lock().await;
@@ -54,33 +67,54 @@ async fn ask_username(stream: Arc<Mutex<TcpStream>>, streams_transmitters: Arc<M
     streams_transmitters.lock().await.insert(username.clone(), client_tx.clone());
 
     tokio::spawn(async move {
-        handle_client(reader, write_stream, username, client_tx, client_rx).await;
+        handle_client(reader, write_stream, username, client_tx, client_rx, server_tx).await;
     });
 }
 
 
 /*
-    1. Should receive the stream (Params) DONE
-    2. Split the stream into read and write DONE
+    1. Should receive the stream (Params) (DONE)
+    2. Split the stream into read and write (DONE)
     3. Should receive the server transmitter (Params)
-    4. Should Receive the username (Params) DONE
-    5. Should receive the receiver of the client itself (Params) DONE
+    4. Should Receive the username (Params) (DONE)
+    5. Should receive the receiver of the client itself (Params) (DONE)
     6. This function should implement select for seclecting between the future that are ready for the client (Read, or to write to someone , or recieveing a message via channels)
+    7. Add a feature in which when user discinnects the tx should be removed from the global state in the Ok(0) whe user disconnects 
+    8. Now this function should listen to the receiver end of the mpsc channel (DONE)
+    9. The mpsc channel message should be also be decode what does it say,so parse that message too 
 */
-async fn handle_client(mut buf_read_stream: BufReader<OwnedReadHalf>, write_stream: OwnedWriteHalf, username: String, client_tx: Sender<String>, mut client_rx: Receiver<String>) {
+async fn handle_client(mut buf_read_stream: BufReader<OwnedReadHalf>, write_stream: OwnedWriteHalf, username: String, client_tx: Sender<String>, mut client_rx: Receiver<String>, server_tx: Sender<String>) {
     println!("Inside the handle_client");
-    let mut message= String::new();
-    
+ 
+
+    // What messages could be received from this channel
+    // 1. From server that this person sent this message so two "from" and "message"
+    // let channel_message = client_rx.recv().await;
+
+    let mut reader_message = String::new();
     loop {
-        match buf_read_stream.read_line(&mut message).await {
-            Ok(0) => {println!("User Disconnected.")},
-            Ok(_) => {println!("This is the message {:?}", message.trim())},
+        match buf_read_stream.read_line(&mut reader_message).await {
+            Ok(0)=>{
+                println!("User Disconnected.");
+                break;
+            },
+            Ok(_) => {
+                println!("This is the reader_message {:?}", reader_message.trim());
+                match server_tx.send(reader_message.clone()).await  {
+                    Ok(()) => {println!("Message sent")},
+                    Err(e) => {println!("Message not sent {e:?}")}
+                }
+                // parse_mesage(&reader_message);
+                reader_message.clear();
+            },
             Err(e) => {println!("Failed to readline")}
         }
     }
 }
 
+fn parse_mesage(message: &String) {
 
+}
 
 
 

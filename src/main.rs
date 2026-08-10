@@ -63,6 +63,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     2. will send message to other clients via channels( from , message)
     3. parse the payload message 
     4. also will check if the user exists or not if not that will notify the sender user not found
+    5. Use tokio select  if needed
 */
 async fn handle_server(mut server_rx: Receiver<Command>, streams_channels_tx: Arc<Mutex<HashMap<String, Sender<String>>>> ) {
     println!("Receiver channel open for the server");
@@ -72,7 +73,8 @@ async fn handle_server(mut server_rx: Receiver<Command>, streams_channels_tx: Ar
             ClientEvent::Msg => {
                 // find the user if not present than send message back to the sender that username entered incorrectly or does not exist
                 println!("RECIEVED PAYLOAD FROM THE CLIENT {:?}", payload.Payload.Message);
-                match streams_channels_tx.lock().await.get(&payload.Payload.Receiver_Username) {
+                let streams_tx_locked = streams_channels_tx.lock().await;
+                match streams_tx_locked.get(&payload.Payload.Receiver_Username) {
                     Some(client_tx) => { 
                         println!("MESSAGE SENT TO THE CLIENT FROM SERVER");
                         let fromatted_message = format!("{}:{}", payload.Payload.Sender_Username, payload.Payload.Message);
@@ -81,12 +83,15 @@ async fn handle_server(mut server_rx: Receiver<Command>, streams_channels_tx: Ar
                     _ =>{
                         // Send message to sender from server that you entered username does not exist or entered the username incorrect
                         println!("user not found");
+                        // let streams_tx_locked = streams_channels_tx.lock().await;
+                        println!("THIS IS THE SENDER USERNAME : IN HANDLE CLIENT {}",payload.Payload.Sender_Username);
+                        let sender_tx =  streams_tx_locked.get(&payload.Payload.Sender_Username).expect("Sender Stream Not Found");
+                        let initial_formatting_message = format!("User {} not found, please enter correct username", payload.Payload.Sender_Username);
+                        let formatted_message = format!("Server : {}", initial_formatting_message);
+                        (*sender_tx).send(formatted_message.to_string()).await;
                     }
+
                 }
-                // match payload.Payload.Receiver_Username {
-                    
-                //     _ =>{}
-                // }
             },
             _ =>{ }
         }
@@ -103,7 +108,7 @@ async fn ask_username(stream: Arc<Mutex<TcpStream>>, streams_transmitters: Arc<M
         (locked_shared_stream).write_all(formatted_message.as_bytes()).await;
     }
     
-    let mut stream_task = Arc::try_unwrap(stream).expect("Stream in use elsewhere").into_inner();
+    let stream_task = Arc::try_unwrap(stream).expect("Stream in use elsewhere").into_inner();
     let (read_stream, write_stream) = stream_task.into_split();
     let mut reader  = BufReader::new(read_stream);
 
@@ -114,13 +119,16 @@ async fn ask_username(stream: Arc<Mutex<TcpStream>>, streams_transmitters: Arc<M
         Ok(_) => {println!("This is the username {:?}", username.trim())},
         Err(e) => {println!("Failed to readline")}
     }
-
+    let username = username.trim().to_string();
     let (client_tx, client_rx) = mpsc::channel(100);
     println!("THIS IS THE USERNAME CLONE {:?}", username.clone());
-    streams_transmitters.lock().await.insert((username.trim().to_string()).clone(), client_tx.clone());
+    {
+        let mut streams_tx_locked = streams_transmitters.lock().await;
+        (streams_tx_locked).insert((username.trim().to_string()).clone(), client_tx.clone());
+    }
 
     tokio::spawn(async move {
-        handle_client(reader, write_stream, username, client_tx, client_rx, server_tx).await;
+        handle_client(reader, write_stream, username, client_rx, server_tx).await;
     });
 }
 
@@ -137,7 +145,7 @@ async fn ask_username(stream: Arc<Mutex<TcpStream>>, streams_transmitters: Arc<M
     9. The mpsc channel message should be also be decode what does it say,so parse that message too 
     10. // Self -- List, Error, Help  Server - Msg, Broad, Quit  (DONE)
 */
-async fn handle_client(mut buf_read_stream: BufReader<OwnedReadHalf>, mut write_stream: OwnedWriteHalf, username: String, client_tx: Sender<String>, mut client_rx: Receiver<String>, server_tx: Sender<Command>) {
+async fn handle_client(mut buf_read_stream: BufReader<OwnedReadHalf>, mut write_stream: OwnedWriteHalf, username: String, mut client_rx: Receiver<String>, server_tx: Sender<Command>) {
     println!("Inside the handle_client");
  
     let mut reader_message = String::new();
@@ -157,7 +165,10 @@ async fn handle_client(mut buf_read_stream: BufReader<OwnedReadHalf>, mut write_
                         match command.Event {
                            ClientEvent::Msg => {
                             println!("SENDING MESSAGE TO SERVER VIA CHANNELS IN HANDLE CLIENT");
-                            server_tx.send(command).await;
+                            match server_tx.send(command).await {
+                                Ok(_) => {println!("MESSAGE SENT TO THE SERVER VIA HANDLE CLIENT");}
+                                _ => {return}
+                            }
                            }, 
                            ClientEvent::Broadcast => {
                             server_tx.send(command).await;
@@ -192,7 +203,7 @@ async fn handle_client(mut buf_read_stream: BufReader<OwnedReadHalf>, mut write_
                         // Msg, Braod, List, Quit, Help ,Error
                         reader_message.clear();
                     },
-                    Err(e) => {println!("Failed to readline")}
+                    Err(e) => {println!("Failed to readline {e}")}
                 }
             }
             
@@ -203,8 +214,9 @@ async fn handle_client(mut buf_read_stream: BufReader<OwnedReadHalf>, mut write_
                         let cleaned_message = raw_message.replace("\\n", "").replace('\n', "").replace('\r', "").replace('"', "");
                         println!("RAW MESSAGE {raw_message:?}");
                         println!("CLEANED MESSAGE {cleaned_message:?}");
+                        // TODO - add pattern matching for the below split message[0] and [1] also add that when i receive message from the server
                         let spilt_message:Vec<&str> = cleaned_message.split(':').collect();
-                        let sender_username = spilt_message[0].trim();
+                        let sender_username = spilt_message[0];
                         println!("THIS IS THE USERNAME FROM THE SERVER {sender_username:?}");
                         let message = spilt_message[1].trim();
                         println!("THIS IS THE MESSAGE FROM THE SERVER {message:?}");
@@ -214,7 +226,6 @@ async fn handle_client(mut buf_read_stream: BufReader<OwnedReadHalf>, mut write_
                     },
                     _ =>{}
                 }
-                // write_stream.write_all(src)
             }
         }
     } 

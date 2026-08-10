@@ -176,6 +176,8 @@ async fn handle_client(mut buf_read_stream: BufReader<OwnedReadHalf>, mut write_
                 match read_result {
                     Ok(0)=>{
                         println!("User Disconnected.");
+                        let quit_command = Command{ Event: ClientEvent::Quit, Payload: MessagePayload{Sender_Username: username.clone(), Receiver_Username: String::new(), Message: String::new()}};
+                        server_tx.send(quit_command).await;
                         break;
                     },
                     Ok(_) => {
@@ -289,12 +291,11 @@ fn parse_message(sender_username: String, message: &String) -> Command {
             "broadcast" => {
                 println!("Inside broadcast");
                 let formatted_message = format!("Broadcast");
-                Command { Event: ClientEvent::Broadcast, Payload: MessagePayload{Sender_Username: sender_username.clone(), Receiver_Username: sender_username.clone(), Message:  formatted_message.to_string()}}
+                Command { Event: ClientEvent::Broadcast, Payload: MessagePayload{Sender_Username: sender_username.clone(), Receiver_Username: String::new(), Message: formatted_message.to_string()}}
             },
             "quit" => {
                 println!("Inside quit");
-                let formatted_message = format!("Quit");
-                Command { Event: ClientEvent::Quit, Payload: MessagePayload{Sender_Username: sender_username.clone(), Receiver_Username: sender_username.clone(), Message:  formatted_message.to_string()}}
+                Command { Event: ClientEvent::Quit, Payload: MessagePayload{Sender_Username: sender_username.clone(), Receiver_Username: String::new(), Message:  String::new()}}
             },
             "help" => {
                 println!("Inside help");

@@ -68,12 +68,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
 async fn handle_server(mut server_rx: Receiver<Command>, streams_channels_tx: Arc<Mutex<HashMap<String, Sender<String>>>> ) {
     println!("Receiver channel open for the server");
     while let Some(payload) = server_rx.recv().await {
-        // println!("Recieved a message to the server viz {:?}: ", message);
+
+        let mut streams_tx_locked = streams_channels_tx.lock().await;
         match payload.Event {
             ClientEvent::Msg => {
-                // find the user if not present than send message back to the sender that username entered incorrectly or does not exist
-                println!("RECIEVED PAYLOAD FROM THE CLIENT {:?}", payload.Payload.Message);
-                let streams_tx_locked = streams_channels_tx.lock().await;
+                println!("MSG: RECIEVED PAYLOAD FROM THE CLIENT {:?}", payload.Payload.Message);
+                
                 match streams_tx_locked.get(&payload.Payload.Receiver_Username) {
                     Some(client_tx) => { 
                         println!("MESSAGE SENT TO THE CLIENT FROM SERVER");
@@ -83,15 +83,28 @@ async fn handle_server(mut server_rx: Receiver<Command>, streams_channels_tx: Ar
                     _ =>{
                         // Send message to sender from server that you entered username does not exist or entered the username incorrect
                         println!("user not found");
-                        // let streams_tx_locked = streams_channels_tx.lock().await;
                         println!("THIS IS THE SENDER USERNAME : IN HANDLE CLIENT {}",payload.Payload.Sender_Username);
                         let sender_tx =  streams_tx_locked.get(&payload.Payload.Sender_Username).expect("Sender Stream Not Found");
                         let initial_formatting_message = format!("User {} not found, please enter correct username", payload.Payload.Sender_Username);
                         let formatted_message = format!("Server : {}", initial_formatting_message);
-                        (*sender_tx).send(formatted_message.to_string()).await;
+                        sender_tx.send(formatted_message.to_string()).await;
                     }
                 }
             },
+            ClientEvent::Broadcast => {
+                println!("BROADCAST: broadcast cmd received from the client");
+                for (receiver_username, receiver_tx) in streams_tx_locked.iter()  {
+                    if receiver_username != &payload.Payload.Sender_Username {
+                        let formatted_message = format!("{}: {}", payload.Payload.Sender_Username, payload.Payload.Message);
+                        receiver_tx.send(formatted_message.to_string()).await;
+                    }
+                }
+                println!("OUTSIDE the FOR LOOP OF BROADCAST");
+            },
+            ClientEvent::Quit => {
+                println!("QUIT: quit cmd received from the client");
+                streams_tx_locked.remove(&payload.Payload.Sender_Username);
+            }
             _ =>{ }
         }
         // println!("Recieved a message to the server");

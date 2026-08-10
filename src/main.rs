@@ -1,5 +1,5 @@
 use tokio::{io::{AsyncBufReadExt, AsyncWriteExt, BufReader, ReadHalf}, net::{TcpListener, TcpStream, tcp::{OwnedReadHalf, OwnedWriteHalf, WriteHalf}}, stream, sync::{ Mutex, mpsc::{self, Receiver, Sender}}};
-use std::{collections::HashMap, error::Error, rc::Rc, sync::Arc};
+use std::{collections::HashMap, error::Error, fmt::format, rc::Rc, sync::Arc};
 
 
 enum ClientEvent{
@@ -101,6 +101,23 @@ async fn handle_server(mut server_rx: Receiver<Command>, streams_channels_tx: Ar
                 }
                 println!("OUTSIDE the FOR LOOP OF BROADCAST");
             },
+            ClientEvent::List => {
+                println!("LIST: list cmd received from the client");
+                let mut usernames = String::new();
+                for (receiver_username, _)  in streams_tx_locked.iter() {
+                    let formatted_message = format!("{receiver_username}\n");
+                    usernames.push_str(formatted_message.as_str());
+                }
+                match streams_tx_locked.get(&payload.Payload.Sender_Username) {
+                    Some(sender_tx) => {
+                        let formatted_message = format!("Server : {}", usernames);
+                        sender_tx.send(formatted_message).await;
+                    }
+                    _ => {
+                        println!("Stream Not Found");
+                    }
+                }
+            }
             ClientEvent::Quit => {
                 println!("QUIT: quit cmd received from the client");
                 streams_tx_locked.remove(&payload.Payload.Sender_Username);
@@ -176,6 +193,8 @@ async fn handle_client(mut buf_read_stream: BufReader<OwnedReadHalf>, mut write_
                 match read_result {
                     Ok(0)=>{
                         println!("User Disconnected.");
+                        let quit_command = Command{ Event: ClientEvent::Quit, Payload: MessagePayload{Sender_Username: username.clone(), Receiver_Username: String::new(), Message: String::new()}};
+                        server_tx.send(quit_command).await;
                         break;
                     },
                     Ok(_) => {
@@ -202,9 +221,7 @@ async fn handle_client(mut buf_read_stream: BufReader<OwnedReadHalf>, mut write_
                             break;
                            },
                            ClientEvent::List => {
-                            let message = command.Payload.Message;
-                            let formatted_message = format!("\n Server: {} \n", message);
-                            write_stream.write_all(formatted_message.as_bytes()).await;
+                            server_tx.send(command).await;
                            },
                            ClientEvent::Help => {
                             let message = command.Payload.Message;
@@ -231,7 +248,7 @@ async fn handle_client(mut buf_read_stream: BufReader<OwnedReadHalf>, mut write_
                 println!("This is the message recived from the channel {messages_from_channel:?}");
                 match messages_from_channel {
                     Some(raw_message) => {
-                        let cleaned_message = raw_message.replace("\\n", "").replace('\n', "").replace('\r', "").replace('"', "");
+                        let cleaned_message = raw_message.replace("\\n", "").replace('\r', "").replace('"', "");
                         println!("RAW MESSAGE {raw_message:?}");
                         println!("CLEANED MESSAGE {cleaned_message:?}");
                         // TODO - add pattern matching for the below split message[0] and [1] also add that when i receive message from the server
@@ -283,18 +300,16 @@ fn parse_message(sender_username: String, message: &String) -> Command {
             },
             "list" => {
                 println!("Inside list");
-                let formatted_message = format!("list");
-                Command { Event: ClientEvent::List, Payload: MessagePayload{Sender_Username: sender_username.clone(), Receiver_Username: sender_username.clone(), Message:  formatted_message.to_string()}}
+                Command { Event: ClientEvent::List, Payload: MessagePayload{Sender_Username: sender_username.clone(), Receiver_Username: String::new(), Message:  String::new()}}
             },
             "broadcast" => {
                 println!("Inside broadcast");
                 let formatted_message = format!("Broadcast");
-                Command { Event: ClientEvent::Broadcast, Payload: MessagePayload{Sender_Username: sender_username.clone(), Receiver_Username: sender_username.clone(), Message:  formatted_message.to_string()}}
+                Command { Event: ClientEvent::Broadcast, Payload: MessagePayload{Sender_Username: sender_username.clone(), Receiver_Username: String::new(), Message: formatted_message.to_string()}}
             },
             "quit" => {
                 println!("Inside quit");
-                let formatted_message = format!("Quit");
-                Command { Event: ClientEvent::Quit, Payload: MessagePayload{Sender_Username: sender_username.clone(), Receiver_Username: sender_username.clone(), Message:  formatted_message.to_string()}}
+                Command { Event: ClientEvent::Quit, Payload: MessagePayload{Sender_Username: sender_username.clone(), Receiver_Username: String::new(), Message:  String::new()}}
             },
             "help" => {
                 println!("Inside help");

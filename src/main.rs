@@ -1,5 +1,5 @@
 use tokio::{io::{AsyncBufReadExt, AsyncWriteExt, BufReader, ReadHalf}, net::{TcpListener, TcpStream, tcp::{OwnedReadHalf, OwnedWriteHalf, WriteHalf}}, stream, sync::{ Mutex, mpsc::{self, Receiver, Sender}}};
-use std::{collections::HashMap, error::Error, rc::Rc, sync::Arc, vec};
+use std::{collections::HashMap, error::Error, rc::Rc, sync::Arc};
 
 
 enum ClientEvent{
@@ -90,7 +90,6 @@ async fn handle_server(mut server_rx: Receiver<Command>, streams_channels_tx: Ar
                         let formatted_message = format!("Server : {}", initial_formatting_message);
                         (*sender_tx).send(formatted_message.to_string()).await;
                     }
-
                 }
             },
             _ =>{ }
@@ -102,14 +101,11 @@ async fn handle_server(mut server_rx: Receiver<Command>, streams_channels_tx: Ar
 
 async fn ask_username(stream: Arc<Mutex<TcpStream>>, streams_transmitters: Arc<Mutex<HashMap<String, Sender<String>>>>, server_tx: Sender<Command>) {
     let formatted_message = &format!("Please Enter Your Username: ");
-    {   
-        let mut locked_shared_stream = stream.lock().await;
-        
-        (locked_shared_stream).write_all(formatted_message.as_bytes()).await;
-    }
-    
     let stream_task = Arc::try_unwrap(stream).expect("Stream in use elsewhere").into_inner();
-    let (read_stream, write_stream) = stream_task.into_split();
+    let (read_stream, mut write_stream) = stream_task.into_split();
+   
+    (write_stream).write_all(formatted_message.as_bytes()).await;
+
     let mut reader  = BufReader::new(read_stream);
 
     // TODO - Add a check that checks whether the username already exists or not 
@@ -119,12 +115,23 @@ async fn ask_username(stream: Arc<Mutex<TcpStream>>, streams_transmitters: Arc<M
         Ok(_) => {println!("This is the username {:?}", username.trim())},
         Err(e) => {println!("Failed to readline")}
     }
+
     let username = username.trim().to_string();
     let (client_tx, client_rx) = mpsc::channel(100);
     println!("THIS IS THE USERNAME CLONE {:?}", username.clone());
+
     {
         let mut streams_tx_locked = streams_transmitters.lock().await;
-        (streams_tx_locked).insert((username.trim().to_string()).clone(), client_tx.clone());
+        match streams_tx_locked.get(&username) {
+            Some(val) => {
+                let formatted_message = &format!("Username {:?} already exist, please enter another username", username);
+                write_stream.write_all(formatted_message.as_bytes()).await;
+            },
+            None => {
+                let username_clone = (username.clone()).trim().to_string();
+                streams_tx_locked.insert(username_clone, client_tx);
+            }
+        }
     }
 
     tokio::spawn(async move {
@@ -224,7 +231,9 @@ async fn handle_client(mut buf_read_stream: BufReader<OwnedReadHalf>, mut write_
                         let formatted_message = format!("{}: {}\n", prefix , message);
                         write_stream.write_all(formatted_message.as_bytes()).await;
                     },
-                    _ =>{}
+                    _ =>{
+                        break;
+                    }
                 }
             }
         }
